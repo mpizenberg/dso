@@ -150,11 +150,6 @@ FullSystem::FullSystem() {
   isLost = false;
   initFailed = false;
 
-  needNewKFAfter = -1;
-
-  linearizeOperation = true;
-  runMapping = true;
-  mappingThread = boost::thread(&FullSystem::mappingLoop, this);
   lastRefStopID = 0;
 
   minIdJetVisDebug = -1;
@@ -164,7 +159,6 @@ FullSystem::FullSystem() {
 }
 
 FullSystem::~FullSystem() {
-  blockUntilMappingIsFinished();
 
   if (setting_logStuff) {
     calibLog->close();
@@ -192,8 +186,6 @@ FullSystem::~FullSystem() {
 
   for (FrameShell *s : allFrameHistory)
     delete s;
-  for (FrameHessian *fh : unmappedTrackedFrames)
-    delete fh;
 
   delete coarseDistanceMap;
   delete coarseTracker;
@@ -901,115 +893,23 @@ void FullSystem::addActiveFrame(ImageAndExposure *image, int id) {
   }
 }
 void FullSystem::deliverTrackedFrame(FrameHessian *fh, bool needKF) {
-
-  if (linearizeOperation) {
-    if (goStepByStep && lastRefStopID != coarseTracker->refFrameID) {
-      MinimalImageF3 img(wG[0], hG[0], fh->dI);
-      IOWrap::displayImage("frameToTrack", &img);
-      while (true) {
-        char k = IOWrap::waitKey(0);
-        if (k == ' ')
-          break;
-        handleKey(k);
-      }
-      lastRefStopID = coarseTracker->refFrameID;
-    } else
-      handleKey(IOWrap::waitKey(1));
-
-    if (needKF)
-      makeKeyFrame(fh);
-    else
-      makeNonKeyFrame(fh);
-  } else {
-    boost::unique_lock<boost::mutex> lock(trackMapSyncMutex);
-    unmappedTrackedFrames.push_back(fh);
-    if (needKF)
-      needNewKFAfter = fh->shell->trackingRef->id;
-    trackedFrameSignal.notify_all();
-
-    while (coarseTracker_forNewKF->refFrameID == -1 &&
-           coarseTracker->refFrameID == -1) {
-      mappedFrameSignal.wait(lock);
+  if (goStepByStep && lastRefStopID != coarseTracker->refFrameID) {
+    MinimalImageF3 img(wG[0], hG[0], fh->dI);
+    IOWrap::displayImage("frameToTrack", &img);
+    while (true) {
+      char k = IOWrap::waitKey(0);
+      if (k == ' ')
+        break;
+      handleKey(k);
     }
+    lastRefStopID = coarseTracker->refFrameID;
+  } else
+    handleKey(IOWrap::waitKey(1));
 
-    lock.unlock();
-  }
-}
-
-void FullSystem::mappingLoop() {
-  boost::unique_lock<boost::mutex> lock(trackMapSyncMutex);
-
-  printf("############### mappingLoop start \n");
-
-  while (runMapping) {
-    while (unmappedTrackedFrames.size() == 0) {
-      trackedFrameSignal.wait(lock);
-      if (!runMapping)
-        return;
-    }
-    printf("############### mappingLoop iteration \n");
-
-    FrameHessian *fh = unmappedTrackedFrames.front();
-    unmappedTrackedFrames.pop_front();
-
-    // guaranteed to make a KF for the very first two tracked frames.
-    if (allKeyFramesHistory.size() <= 2) {
-      lock.unlock();
-      makeKeyFrame(fh);
-      lock.lock();
-      mappedFrameSignal.notify_all();
-      continue;
-    }
-
-    if (unmappedTrackedFrames.size() > 3)
-      needToKetchupMapping = true;
-
-    if (unmappedTrackedFrames.size() >
-        0) // if there are other frames to tracke, do that first.
-    {
-      lock.unlock();
-      makeNonKeyFrame(fh);
-      lock.lock();
-
-      if (needToKetchupMapping && unmappedTrackedFrames.size() > 0) {
-        FrameHessian *fh = unmappedTrackedFrames.front();
-        unmappedTrackedFrames.pop_front();
-        {
-          boost::unique_lock<boost::mutex> crlock(shellPoseMutex);
-          assert(fh->shell->trackingRef != 0);
-          fh->shell->camToWorld =
-              fh->shell->trackingRef->camToWorld * fh->shell->camToTrackingRef;
-          fh->setEvalPT_scaled(fh->shell->camToWorld.inverse(),
-                               fh->shell->aff_g2l);
-        }
-        delete fh;
-      }
-
-    } else {
-      if (setting_realTimeMaxKF ||
-          needNewKFAfter >= frameHessians.back()->shell->id) {
-        lock.unlock();
-        makeKeyFrame(fh);
-        needToKetchupMapping = false;
-        lock.lock();
-      } else {
-        lock.unlock();
-        makeNonKeyFrame(fh);
-        lock.lock();
-      }
-    }
-    mappedFrameSignal.notify_all();
-  }
-  printf("############### mappingLoop finish \n");
-}
-
-void FullSystem::blockUntilMappingIsFinished() {
-  boost::unique_lock<boost::mutex> lock(trackMapSyncMutex);
-  runMapping = false;
-  trackedFrameSignal.notify_all();
-  lock.unlock();
-
-  mappingThread.join();
+  if (needKF)
+    makeKeyFrame(fh);
+  else
+    makeNonKeyFrame(fh);
 }
 
 void FullSystem::makeNonKeyFrame(FrameHessian *fh) {

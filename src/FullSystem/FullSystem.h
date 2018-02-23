@@ -124,7 +124,6 @@ public:
 
   // marginalizes a frame. drops / marginalizes points & residuals.
   void marginalizeFrame(FrameHessian *frame);
-  void blockUntilMappingIsFinished();
 
   float optimize(int mnumOptIts);
 
@@ -278,18 +277,6 @@ private:
   void makeKeyFrame(FrameHessian *fh);
   void makeNonKeyFrame(FrameHessian *fh);
   void deliverTrackedFrame(FrameHessian *fh, bool needKF);
-  void mappingLoop();
-
-  // tracking / mapping synchronization. All protected by [trackMapSyncMutex].
-  boost::mutex trackMapSyncMutex;
-  boost::condition_variable trackedFrameSignal;
-  boost::condition_variable mappedFrameSignal;
-  std::deque<FrameHessian *> unmappedTrackedFrames;
-  int needNewKFAfter; // Otherwise, a new KF is *needed that has ID bigger than
-                      // [needNewKFAfter]*.
-  boost::thread mappingThread;
-  bool runMapping;
-  bool needToKetchupMapping;
 
   int lastRefStopID;
 };
